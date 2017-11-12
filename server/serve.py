@@ -2,6 +2,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import server_helper
+
 import socket
 import time
 import argparse
@@ -12,7 +14,6 @@ import traceback
 import threading
 import multiprocessing
 import random
-
 
 # https://github.com/Nakiami/MultithreadedSimpleHTTPServer/blob/master/MultithreadedSimpleHTTPServer.py
 try:
@@ -146,58 +147,75 @@ class Handler(BaseHTTPRequestHandler):
         body = ""
 
         try:
-            name = self.path[1:]
-
-            if name not in models:
-                raise Exception("invalid model")
-
-            variants = models[name]  # "cloud" and "local" are the two possible variants
-
             content_len = int(self.headers.get("content-length", "0"))
             if content_len > 1 * 1024 * 1024:
                 raise Exception("post body too large")
             input_data = self.rfile.read(content_len)
-            input_b64data = base64.urlsafe_b64encode(input_data)
+
+            processed_png = server_helper.process_received_img(input_data)
+            input_b64data = server_helper.pngdata_to_base64(processed_png)
+
+            class_to_model_name = {
+                'cat': 'edges2cats_AtoB',
+                'dog': 'edges2dogs2'
+            }
+            predicted_class = server_helper.classify_cat_vs_dog(processed_png)
+            headers['predicted_class'] = predicted_class
+            name = class_to_model_name[predicted_class]
+
+            variants = models[name]  # "cloud" and "local" are the two possible variants
 
             time.sleep(a.wait)
 
-            cloud_reject_prob = max(0, (cloud_requests.value() - 1.1 * cloud_accepts.value()) / (cloud_requests.value() + 1))
-            # print("requests=%d accepts=%d cloud_reject_prob=%f" % (cloud_requests.value(), cloud_accepts.value(), cloud_reject_prob))
+            if False: # name == "edges2cats_AtoB":
+                pass
+            #     import requests
+            #     url = "https://pix2pix.affinelayer.com/edges2cats_AtoB"
+            #     data = processed_png
+            #     headers = {'Content-Type': 'image/png'}
 
-            output_b64data = None
-            if "cloud" in variants and random.random() > cloud_reject_prob:
-                input_instance = dict(input=input_b64data, key="0")
-                # the client does not seem to be threadsafe, so make one for each request
-                # also the cache is broken by oauth2client 4.0.0, so use a memory cache
-                request = build_cloud_client().projects().predict(name="projects/" + project_id + "/models/" + name, body={"instances": [input_instance]})
-                try:
-                    cloud_requests.incr()
-                    response = request.execute()
-                    output_instance = response["predictions"][0]
-                    output_b64data = output_instance["output"].encode("ascii")
-                    cloud_accepts.incr()
-                except Exception as e:
-                    print("exception while running cloud model", traceback.format_exc())
-                    print("falling back to local")
+            #     r = requests.post(url=url, data=data, headers=headers)
+            #     output_data = r.content
 
-            if output_b64data is None and "local" in variants and jobs.acquire(blocking=False):
-                m = variants["local"]
-                try:
-                    output_b64data = m["sess"].run(m["output"], feed_dict={m["input"]: [input_b64data]})[0]
-                finally:
-                    jobs.release()
+            else:
+                cloud_reject_prob = max(0, (cloud_requests.value() - 1.1 * cloud_accepts.value()) / (cloud_requests.value() + 1))
+                # print("requests=%d accepts=%d cloud_reject_prob=%f" % (cloud_requests.value(), cloud_accepts.value(), cloud_reject_prob))
 
-            if output_b64data is None:
-                raise Exception("too many requests")
+                output_b64data = None
+                if "cloud" in variants and random.random() > cloud_reject_prob:
+                    input_instance = dict(input=input_b64data, key="0")
+                    # the client does not seem to be threadsafe, so make one for each request
+                    # also the cache is broken by oauth2client 4.0.0, so use a memory cache
+                    request = build_cloud_client().projects().predict(name="projects/" + project_id + "/models/" + name, body={"instances": [input_instance]})
+                    try:
+                        cloud_requests.incr()
+                        response = request.execute()
+                        output_instance = response["predictions"][0]
+                        output_b64data = output_instance["output"].encode("ascii")
+                        cloud_accepts.incr()
+                    except Exception as e:
+                        print("exception while running cloud model", traceback.format_exc())
+                        print("falling back to local")
 
-            # add any missing padding
-            output_b64data += b"=" * (-len(output_b64data) % 4)
-            output_data = base64.urlsafe_b64decode(output_b64data)
+                if output_b64data is None and "local" in variants and jobs.acquire(blocking=False):
+                    m = variants["local"]
+                    try:
+                        output_b64data = m["sess"].run(m["output"], feed_dict={m["input"]: [input_b64data]})[0]
+                    finally:
+                        jobs.release()
+
+                if output_b64data is None:
+                    raise Exception("too many requests")
+
+                # add any missing padding
+                output_b64data += b"=" * (-len(output_b64data) % 4)
+                output_data = base64.urlsafe_b64decode(output_b64data)
+            
+            body = output_data
             if output_data.startswith(b"\x89PNG"):
                 headers["content-type"] = "image/png"
             else:
                 headers["content-type"] = "image/jpeg"
-            body = output_data
             successes.incr()
         except Exception as e:
             failures.incr()
@@ -207,6 +225,7 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_response(status)
         for key, value in headers.items():
+            print("Sending in header: ", key, value)
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
@@ -224,6 +243,7 @@ def main():
 
     if a.local_models_dir is not None:
         import tensorflow as tf
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
         for name in os.listdir(a.local_models_dir):
             if name.startswith("."):
                 continue

@@ -303,7 +303,8 @@ render: function() {
           last_request_failed = false
           var convert = createContext(SIZE, SIZE, 1)
           convert.drawImage(this.buffer.canvas, 0, 0, convert.canvas.width, convert.canvas.height)
-          var input_b64 = convert.canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "")
+          // var input_b64 = convert.canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "")
+	  var input_bin = convert.canvas.toBlob( (blob) => {
           var xhr = new XMLHttpRequest()
           xhr.open("POST", this.config.generate_url, true)
           xhr.setRequestHeader("Content-Type", "image/png")
@@ -331,7 +332,8 @@ render: function() {
           }
           request_in_progress = true
           update()
-          xhr.send(b64_to_bin(input_b64))
+          xhr.send(blob)
+          })
         }
       }
     })

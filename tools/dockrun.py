@@ -106,7 +106,7 @@ def main():
     if a.port is not None:
         docker_args += ["--publish", "%d:%d" % (a.port, a.port)]
 
-    args = [docker_path, "run"] + docker_args + ["affinelayer/pix2pix-tensorflow:v2"] + cmd
+    args = [docker_path, "run"] + docker_args + ["chrisyeh96/pix2pix"] + cmd
 
     if not os.access("/var/run/docker.sock", os.R_OK):
         args = ["sudo"] + args

@@ -13,6 +13,7 @@ import tfimage as im
 import threading
 import time
 import multiprocessing
+import cv2
 
 edge_pool = None
 
@@ -128,8 +129,23 @@ def run_caffe(src):
     net.forward()
     return net.blobs["sigmoid-fuse"].data[0][0,:,:]
 
-    
 def edges(src):
+    src = im.to_uint8(image=src)
+    
+    # median = np.median(src)
+    # sigma = 0.33
+    # lower = int(max(0, (1.0 - sigma) * median))
+    # upper = int(min(255, (1.0 + sigma) * median))
+    # out = cv2.Canny(src, lower, upper)
+
+    # previously, just hard-coded lower=250 and upper=350
+    out = cv2.Canny(src, 200, 300) # edge detection => black background, white edges
+    out = cv2.bitwise_not(out) # invert image => white background, black edges
+    out = cv2.cvtColor(out,cv2.COLOR_GRAY2RGB)
+    out = im.to_float32(image=out)
+    return out
+    
+def edges_old(src):
     # based on https://github.com/phillipi/pix2pix/blob/master/scripts/edges/batch_hed.py
     # and https://github.com/phillipi/pix2pix/blob/master/scripts/edges/PostprocessHED.m
     import scipy.io
@@ -190,6 +206,7 @@ imwrite(E, output_path);
 
 
 def process(src_path, dst_path):
+    print(src_path)
     src = im.load(src_path)
 
     if a.operation == "grayscale":
@@ -202,6 +219,8 @@ def process(src_path, dst_path):
         dst = combine(src, src_path)
     elif a.operation == "edges":
         dst = edges(src)
+    elif a.operation == "edges_old":
+        dst = edges_old(src)
     else:
         raise Exception("invalid operation")
 
@@ -258,7 +277,7 @@ def main():
     global start
     start = time.time()
     
-    if a.operation == "edges":
+    if a.operation == "edges_old":
         # use a multiprocessing pool for this operation so it can use multiple CPUs
         # create the pool before we launch processing threads
         global edge_pool
@@ -270,7 +289,9 @@ def main():
                 process(src_path, dst_path)
                 complete()
     else:
-        queue = tf.train.input_producer(zip(src_paths, dst_paths), shuffle=False, num_epochs=1)
+        print(len(src_paths))
+        print(len(dst_paths))
+        queue = tf.train.input_producer(list(zip(src_paths, dst_paths)), shuffle=False, num_epochs=1)
         dequeue_op = queue.dequeue()
 
         def worker(coord):
@@ -282,12 +303,14 @@ def main():
                         coord.request_stop()
                         break
 
-                    process(src_path, dst_path)
+                    process(src_path.decode('ascii'), dst_path.decode('ascii'))
                     complete()
 
         # init epoch counter for the queue
         local_init_op = tf.local_variables_initializer()
-        with tf.Session() as sess:
+        config = tf.ConfigProto()
+        config.gpu_options.allow_growth = True
+        with tf.Session(config=config) as sess:
             sess.run(local_init_op)
 
             coord = tf.train.Coordinator()
